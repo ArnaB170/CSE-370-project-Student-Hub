@@ -3,7 +3,7 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Generation Time: Aug 29, 2026 at 07:36 AM
+-- Generation Time: Sep 01, 2026 at 12:40 AM
 -- Server version: 10.4.32-MariaDB
 -- PHP Version: 8.0.30
 
@@ -32,15 +32,16 @@ CREATE TABLE `anonymous_profile` (
   `profile_id` int(11) NOT NULL,
   `pseudonym` varchar(100) NOT NULL,
   `hobbies` text DEFAULT NULL,
-  `created_at` datetime DEFAULT current_timestamp()
+  `created_at` datetime DEFAULT current_timestamp(),
+  `is_banned` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Dumping data for table `anonymous_profile`
 --
 
-INSERT INTO `anonymous_profile` (`anon_id`, `profile_id`, `pseudonym`, `hobbies`, `created_at`) VALUES
-(1, 2, 'Night owl', 'Books, anime', '2026-08-22 19:40:48');
+INSERT INTO `anonymous_profile` (`anon_id`, `profile_id`, `pseudonym`, `hobbies`, `created_at`, `is_banned`) VALUES
+(1, 2, 'Night owl', 'Books, anime', '2026-08-22 19:40:48', 0);
 
 -- --------------------------------------------------------
 
@@ -108,6 +109,21 @@ INSERT INTO `favorwallet` (`id`, `student_id`, `name`, `type`, `number`, `descri
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `report_log`
+--
+
+CREATE TABLE `report_log` (
+  `report_id` int(11) NOT NULL,
+  `reported_user_id` int(11) NOT NULL,
+  `reporter_user_id` int(11) NOT NULL,
+  `room_or_group_id` int(11) NOT NULL,
+  `platform` varchar(20) NOT NULL COMMENT '"Stranger" or "Study"',
+  `created_at` datetime DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `resource_upload`
 --
 
@@ -138,7 +154,8 @@ CREATE TABLE `room_member` (
 
 INSERT INTO `room_member` (`room_id`, `anon_id`, `joined_at`) VALUES
 (1, 1, '2026-08-22 19:41:12'),
-(2, 1, '2026-08-25 15:04:04');
+(2, 1, '2026-08-25 15:04:04'),
+(8, 1, '2026-09-01 04:36:58');
 
 -- --------------------------------------------------------
 
@@ -172,16 +189,18 @@ CREATE TABLE `stranger_room` (
   `room_name` varchar(150) NOT NULL,
   `created_by` int(11) NOT NULL,
   `created_at` datetime DEFAULT current_timestamp(),
-  `is_active` tinyint(1) DEFAULT 1
+  `is_active` tinyint(1) DEFAULT 1,
+  `is_random` tinyint(1) DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Dumping data for table `stranger_room`
 --
 
-INSERT INTO `stranger_room` (`room_id`, `room_name`, `created_by`, `created_at`, `is_active`) VALUES
-(1, 'anime night', 1, '2026-08-22 19:41:12', 1),
-(2, 'skfhkhf', 1, '2026-08-25 15:04:04', 1);
+INSERT INTO `stranger_room` (`room_id`, `room_name`, `created_by`, `created_at`, `is_active`, `is_random`) VALUES
+(1, 'anime night', 1, '2026-08-22 19:41:12', 1, 0),
+(2, 'skfhkhf', 1, '2026-08-25 15:04:04', 1, 0),
+(8, 'sdhkajfhk', 1, '2026-09-01 04:36:58', 1, 0);
 
 -- --------------------------------------------------------
 
@@ -195,16 +214,17 @@ CREATE TABLE `student` (
   `email` varchar(255) NOT NULL,
   `password` varchar(255) NOT NULL,
   `name` varchar(100) NOT NULL,
-  `dept` varchar(100) NOT NULL
+  `dept` varchar(100) NOT NULL,
+  `is_banned` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
 -- Dumping data for table `student`
 --
 
-INSERT INTO `student` (`profile_id`, `id`, `email`, `password`, `name`, `dept`) VALUES
-(2, '24101055', 'arnab.sen@g.bracu.ac.bd', '$2y$10$bZ028YTEpe/CBjXnrGKDJ.aya6UG.cvzapucgsMVKkRsgSIsP3bVe', 'ARNAB SEN', 'CSE'),
-(3, '24101251', 'abdul.kadir.abir@g.bracu.ac.bd', '$2y$10$OHOVXomANAr0rfRMTiI0f.7jIZF/mOSX7whJaDCPvF550dhdy7nzW', 'Abdul Kadir Abir', 'CSE');
+INSERT INTO `student` (`profile_id`, `id`, `email`, `password`, `name`, `dept`, `is_banned`) VALUES
+(2, '24101055', 'arnab.sen@g.bracu.ac.bd', '$2y$10$bZ028YTEpe/CBjXnrGKDJ.aya6UG.cvzapucgsMVKkRsgSIsP3bVe', 'ARNAB SEN', 'CSE', 0),
+(3, '24101251', 'abdul.kadir.abir@g.bracu.ac.bd', '$2y$10$OHOVXomANAr0rfRMTiI0f.7jIZF/mOSX7whJaDCPvF550dhdy7nzW', 'Abdul Kadir Abir', 'CSE', 0);
 
 -- --------------------------------------------------------
 
@@ -325,6 +345,14 @@ ALTER TABLE `favorwallet`
   ADD UNIQUE KEY `student_id` (`student_id`);
 
 --
+-- Indexes for table `report_log`
+--
+ALTER TABLE `report_log`
+  ADD PRIMARY KEY (`report_id`),
+  ADD UNIQUE KEY `unique_report` (`reported_user_id`,`reporter_user_id`,`room_or_group_id`,`platform`),
+  ADD KEY `reporter_user_id` (`reporter_user_id`);
+
+--
 -- Indexes for table `resource_upload`
 --
 ALTER TABLE `resource_upload`
@@ -413,6 +441,12 @@ ALTER TABLE `favorwallet`
   MODIFY `id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
 
 --
+-- AUTO_INCREMENT for table `report_log`
+--
+ALTER TABLE `report_log`
+  MODIFY `report_id` int(11) NOT NULL AUTO_INCREMENT;
+
+--
 -- AUTO_INCREMENT for table `resource_upload`
 --
 ALTER TABLE `resource_upload`
@@ -422,13 +456,13 @@ ALTER TABLE `resource_upload`
 -- AUTO_INCREMENT for table `room_message`
 --
 ALTER TABLE `room_message`
-  MODIFY `message_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
+  MODIFY `message_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
 
 --
 -- AUTO_INCREMENT for table `stranger_room`
 --
 ALTER TABLE `stranger_room`
-  MODIFY `room_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
+  MODIFY `room_id` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=9;
 
 --
 -- AUTO_INCREMENT for table `student`
@@ -475,6 +509,13 @@ ALTER TABLE `anonymous_profile`
 --
 ALTER TABLE `favorwallet`
   ADD CONSTRAINT `favorwallet_ibfk_1` FOREIGN KEY (`student_id`) REFERENCES `student` (`profile_id`) ON DELETE CASCADE ON UPDATE CASCADE;
+
+--
+-- Constraints for table `report_log`
+--
+ALTER TABLE `report_log`
+  ADD CONSTRAINT `report_log_ibfk_1` FOREIGN KEY (`reported_user_id`) REFERENCES `student` (`profile_id`) ON DELETE CASCADE ON UPDATE CASCADE,
+  ADD CONSTRAINT `report_log_ibfk_2` FOREIGN KEY (`reporter_user_id`) REFERENCES `student` (`profile_id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 --
 -- Constraints for table `resource_upload`
