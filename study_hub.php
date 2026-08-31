@@ -28,6 +28,62 @@ if ($conn->connect_error) {
     die('Database connection failed.');
 }
 
+// ────────────────────────────────────────────────────────────
+// BAN CHECK — exiled users see nothing
+// ────────────────────────────────────────────────────────────
+$ban_s = $conn->prepare('SELECT is_banned FROM Student WHERE profile_id = ?');
+$ban_s->bind_param('i', $profile_id);
+$ban_s->execute();
+$ban_row = $ban_s->get_result()->fetch_assoc();
+$ban_s->close();
+
+if ($ban_row && (int)$ban_row['is_banned'] === 1) {
+    if (isset($_GET['ajax'])) {
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'You have been exiled from this realm.', 'banned' => true]);
+        $conn->close();
+        exit;
+    }
+    $conn->close();
+    session_destroy();
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Exiled</title>
+        <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+        <style>
+            *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+            body{min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:'Inter',system-ui,sans-serif;color:#e8e0d8;background:radial-gradient(ellipse at center,#0a0000 0%,#000 70%)}
+            .exile-card{text-align:center;max-width:500px;padding:3rem 2.5rem;background:#0a0a0a;border:1px solid #1a1818;border-radius:4px;box-shadow:0 0 80px rgba(139,0,0,.12);position:relative;animation:fadeIn .8s ease both}
+            .exile-card::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:60%;height:2px;background:linear-gradient(90deg,transparent,#8B0000,transparent)}
+            .exile-icon{width:70px;height:70px;margin:0 auto 1.5rem;display:flex;align-items:center;justify-content:center;border:2px solid rgba(139,0,0,.4);border-radius:50%;background:radial-gradient(circle,rgba(139,0,0,.15),transparent 70%);animation:pulseExile 3s ease-in-out infinite}
+            .exile-icon svg{width:32px;height:32px;fill:#8B0000}
+            h1{font-family:'Cinzel',serif;font-size:1.6rem;letter-spacing:.08em;margin-bottom:.75rem;color:#e8e0d8}
+            p{font-size:.85rem;color:#8a827a;line-height:1.7;margin-bottom:1rem}
+            .quote{font-style:italic;font-size:.76rem;color:rgba(139,0,0,.5);display:block;margin-top:.5rem}
+            @keyframes fadeIn{0%{opacity:0;transform:translateY(20px)}100%{opacity:1;transform:translateY(0)}}
+            @keyframes pulseExile{0%,100%{box-shadow:0 0 0 0 rgba(139,0,0,.2)}50%{box-shadow:0 0 0 12px rgba(139,0,0,0)}}
+        </style>
+    </head>
+    <body>
+        <div class="exile-card">
+            <div class="exile-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+            </div>
+            <h1>You Have Been Exiled</h1>
+            <p>Your presence has been revoked. The halls of knowledge are sealed, and the doors no longer open for you.</p>
+            <p>You have been exiled to the void.</p>
+            <span class="quote">"He who fights with monsters might take care lest he thereby become a monster." — Friedrich Nietzsche</span>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
 // ── Fetch current user's name ────────────────────────────
 $user_name = $_SESSION['user']['name'] ?? 'Student';
 $st = $conn->prepare('SELECT name FROM Student WHERE profile_id = ?');
@@ -60,6 +116,117 @@ if (isset($_GET['ajax'])) {
         while ($row = $res->fetch_assoc()) $rooms[] = $row;
         $st->close();
         echo json_encode(['rooms' => $rooms]);
+        $conn->close();
+        exit;
+    }
+
+    // ── Kick Resource + Uploader (Owner Only) ───────
+    if ($_GET['ajax'] === 'kick_resource' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input       = json_decode(file_get_contents('php://input'), true);
+        $resource_id = (int)($input['resource_id'] ?? 0);
+        $group_id    = (int)($input['group_id'] ?? 0);
+
+        if ($resource_id > 0 && $group_id > 0) {
+            // Verify requester is the room creator
+            $st = $conn->prepare(
+                'SELECT sr.created_by FROM Study_Room sr
+                 JOIN Study_Group sg ON sg.room_id = sr.room_id
+                 WHERE sg.group_id = ?'
+            );
+            $st->bind_param('i', $group_id);
+            $st->execute();
+            $res = $st->get_result();
+            if ($res->num_rows > 0 && (int)$res->fetch_assoc()['created_by'] === $profile_id) {
+                $st->close();
+
+                // Get the uploader's profile_id
+                $st = $conn->prepare('SELECT uploaded_by FROM Resource_Upload WHERE resource_id = ?');
+                $st->bind_param('i', $resource_id);
+                $st->execute();
+                $res = $st->get_result();
+                if ($res->num_rows > 0) {
+                    $uploader_id = (int)$res->fetch_assoc()['uploaded_by'];
+                    $st->close();
+
+                    // Delete the resource
+                    $st = $conn->prepare('DELETE FROM Resource_Upload WHERE resource_id = ?');
+                    $st->bind_param('i', $resource_id);
+                    $st->execute();
+                    $st->close();
+
+                    // Remove uploader from the group (don't kick yourself)
+                    if ($uploader_id !== $profile_id) {
+                        $st = $conn->prepare('DELETE FROM Study_Group_Member WHERE group_id = ? AND profile_id = ?');
+                        $st->bind_param('ii', $group_id, $uploader_id);
+                        $st->execute();
+                        $st->close();
+                    }
+
+                    echo json_encode(['ok' => true]);
+                } else {
+                    $st->close();
+                    echo json_encode(['error' => 'Resource not found.']);
+                }
+            } else {
+                $st->close();
+                echo json_encode(['error' => 'Only the room creator can remove resources.']);
+            }
+        } else {
+            echo json_encode(['error' => 'Invalid request.']);
+        }
+        $conn->close();
+        exit;
+    }
+
+    // ── Report User (3-Strike System) ────────────────
+    if ($_GET['ajax'] === 'report_user' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input               = json_decode(file_get_contents('php://input'), true);
+        $reported_profile_id = (int)($input['reported_profile_id'] ?? 0);
+        $group_id            = (int)($input['group_id'] ?? 0);
+
+        if ($reported_profile_id > 0 && $reported_profile_id !== $profile_id && $group_id > 0) {
+            // Insert report (UNIQUE constraint prevents duplicates)
+            $platform = 'Study';
+            $st = $conn->prepare(
+                'INSERT IGNORE INTO Report_Log (reported_user_id, reporter_user_id, room_or_group_id, platform) VALUES (?, ?, ?, ?)'
+            );
+            $st->bind_param('iiis', $reported_profile_id, $profile_id, $group_id, $platform);
+            $st->execute();
+            $inserted = $st->affected_rows > 0;
+            $st->close();
+
+            if (!$inserted) {
+                echo json_encode(['ok' => false, 'error' => 'You have already reported this user in this group.']);
+                $conn->close();
+                exit;
+            }
+
+            // Count total strikes
+            $st = $conn->prepare('SELECT COUNT(*) AS cnt FROM Report_Log WHERE reported_user_id = ?');
+            $st->bind_param('i', $reported_profile_id);
+            $st->execute();
+            $strike_count = (int)$st->get_result()->fetch_assoc()['cnt'];
+            $st->close();
+
+            $banned = false;
+            if ($strike_count >= 3) {
+                $st = $conn->prepare('UPDATE Student SET is_banned = 1 WHERE profile_id = ?');
+                $st->bind_param('i', $reported_profile_id);
+                $st->execute();
+                $st->close();
+
+                // Also update Anonymous_Profile if exists
+                $st = $conn->prepare('UPDATE Anonymous_Profile SET is_banned = 1 WHERE profile_id = ?');
+                $st->bind_param('i', $reported_profile_id);
+                $st->execute();
+                $st->close();
+                $banned = true;
+            }
+
+            echo json_encode(['ok' => true, 'strike_count' => $strike_count, 'banned' => $banned]);
+        } else {
+            echo json_encode(['error' => 'Invalid report.']);
+        }
         $conn->close();
         exit;
     }
@@ -185,7 +352,7 @@ if (isset($_GET['room'])) {
 
     // Fetch room + group + verify membership
     $st = $conn->prepare(
-        'SELECT sr.room_id, sr.title, sr.created_at, s.name AS creator,
+        'SELECT sr.room_id, sr.title, sr.created_at, sr.created_by, s.name AS creator,
                 sg.group_id, sg.topic, sg.description,
                 (SELECT COUNT(*) FROM Study_Group_Member sgm WHERE sgm.group_id = sg.group_id) AS member_count
          FROM Study_Room sr
@@ -209,7 +376,7 @@ if (isset($_GET['room'])) {
     if ($current_group) {
         $gid = (int)$current_group['group_id'];
         $st = $conn->prepare(
-            'SELECT ru.resource_id, ru.notes, ru.links, ru.uploaded_at, s.name AS uploader
+            'SELECT ru.resource_id, ru.uploaded_by, ru.notes, ru.links, ru.uploaded_at, s.name AS uploader
              FROM Resource_Upload ru
              JOIN Student s ON s.profile_id = ru.uploaded_by
              WHERE ru.group_id = ?
@@ -592,6 +759,35 @@ $conn->close();
             .nav-right { align-self: flex-end; }
             .lobby-content, .room-content { padding: 1.5rem 1rem; }
         }
+
+        /* ── Resource Action Buttons (Kick / Report) ──── */
+        .res-actions {
+            display: flex; gap: .4rem; margin-top: .5rem;
+        }
+        .btn-kick-res, .btn-report-res {
+            display: inline-flex; align-items: center; gap: .25rem;
+            padding: .2rem .55rem;
+            font-family: 'Inter', system-ui, sans-serif; font-size: .62rem; font-weight: 500;
+            letter-spacing: .04em; text-transform: uppercase;
+            border-radius: 2px; cursor: pointer;
+            transition: all .25s;
+        }
+        .btn-kick-res svg, .btn-report-res svg { width: 11px; height: 11px; fill: currentColor; }
+
+        .btn-kick-res {
+            color: #e8e0d8; background: linear-gradient(135deg, #8B0000, #5a0000);
+            border: 1px solid rgba(139,0,0,.5);
+        }
+        .btn-kick-res:hover { box-shadow: 0 0 14px rgba(139,0,0,.3); }
+
+        .btn-report-res {
+            color: #5a5550; background: rgba(255,255,255,.03);
+            border: 1px solid #1a1818;
+        }
+        .btn-report-res:hover {
+            color: #8a827a; border-color: rgba(139,0,0,.3);
+            background: rgba(139,0,0,.06);
+        }
     </style>
 </head>
 <body>
@@ -865,6 +1061,24 @@ elseif ($page_state === 'room' && $current_room): ?>
                                         Shared by <strong><?= htmlspecialchars($res['uploader'], ENT_QUOTES, 'UTF-8') ?></strong>
                                         · <?= date('M j, Y · g:i A', strtotime($res['uploaded_at'])) ?>
                                     </div>
+                                    <?php if ((int)$res['uploaded_by'] !== $profile_id): ?>
+                                        <div class="res-actions">
+                                            <?php if ((int)$current_room['created_by'] === $profile_id): ?>
+                                                <button type="button" class="btn-kick-res"
+                                                        onclick="kickResource(<?= (int)$res['resource_id'] ?>, <?= (int)$res['uploaded_by'] ?>)"
+                                                        title="Remove resource and kick uploader">
+                                                    <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                                                    Kick
+                                                </button>
+                                            <?php endif; ?>
+                                            <button type="button" class="btn-report-res"
+                                                    onclick="reportStudyUser(<?= (int)$res['uploaded_by'] ?>)"
+                                                    title="Report this user">
+                                                <svg viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>
+                                                Report
+                                            </button>
+                                        </div>
+                                    <?php endif; ?>
                                 </div>
                             <?php endforeach; ?>
                         </div>
@@ -876,6 +1090,49 @@ elseif ($page_state === 'room' && $current_room): ?>
     </div>
 </div>
 
+<?php endif; ?>
+
+<?php if ($page_state === 'room' && $current_room): ?>
+<script>
+function kickResource(resourceId, uploaderId) {
+    if (!confirm('Remove this resource and kick the uploader from the group?')) return;
+    fetch('study_hub.php?ajax=kick_resource', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resource_id: resourceId, group_id: <?= (int)$current_group['group_id'] ?> })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            alert('Resource removed and uploader has been kicked from the group.');
+            window.location.reload();
+        } else {
+            alert(data.error || 'Failed to kick resource.');
+        }
+    })
+    .catch(() => alert('Network error.'));
+}
+
+function reportStudyUser(reportedProfileId) {
+    if (!confirm('Report this user for misconduct?\n\nRepeated reports from the community may lead to their exile.')) return;
+    fetch('study_hub.php?ajax=report_user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reported_profile_id: reportedProfileId, group_id: <?= (int)$current_group['group_id'] ?> })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            let msg = 'Report filed. Strike ' + data.strike_count + ' of 3 recorded.';
+            if (data.banned) msg += '\n\nThe user has been exiled to the void.';
+            alert(msg);
+        } else {
+            alert(data.error || 'Failed to file report.');
+        }
+    })
+    .catch(() => alert('Network error.'));
+}
+</script>
 <?php endif; ?>
 
 </body>

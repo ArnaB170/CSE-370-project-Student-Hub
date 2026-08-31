@@ -28,6 +28,62 @@ if ($conn->connect_error) {
 }
 
 // ────────────────────────────────────────────────────────────
+// BAN CHECK — exiled users see nothing
+// ────────────────────────────────────────────────────────────
+$ban_s = $conn->prepare('SELECT is_banned FROM Student WHERE profile_id = ?');
+$ban_s->bind_param('i', $profile_id);
+$ban_s->execute();
+$ban_row = $ban_s->get_result()->fetch_assoc();
+$ban_s->close();
+
+if ($ban_row && (int)$ban_row['is_banned'] === 1) {
+    if (isset($_GET['ajax'])) {
+        header('Content-Type: application/json');
+        echo json_encode(['error' => 'You have been exiled from this realm.', 'banned' => true]);
+        $conn->close();
+        exit;
+    }
+    $conn->close();
+    session_destroy();
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Exiled</title>
+        <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+        <style>
+            *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+            body{min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:'Inter',system-ui,sans-serif;color:#e8e0d8;background:radial-gradient(ellipse at center,#0a0000 0%,#000 70%)}
+            .exile-card{text-align:center;max-width:500px;padding:3rem 2.5rem;background:#0a0a0a;border:1px solid #1a1818;border-radius:4px;box-shadow:0 0 80px rgba(139,0,0,.12);position:relative;animation:fadeIn .8s ease both}
+            .exile-card::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);width:60%;height:2px;background:linear-gradient(90deg,transparent,#8B0000,transparent)}
+            .exile-icon{width:70px;height:70px;margin:0 auto 1.5rem;display:flex;align-items:center;justify-content:center;border:2px solid rgba(139,0,0,.4);border-radius:50%;background:radial-gradient(circle,rgba(139,0,0,.15),transparent 70%);animation:pulseExile 3s ease-in-out infinite}
+            .exile-icon svg{width:32px;height:32px;fill:#8B0000}
+            h1{font-family:'Cinzel',serif;font-size:1.6rem;letter-spacing:.08em;margin-bottom:.75rem;color:#e8e0d8}
+            p{font-size:.85rem;color:#8a827a;line-height:1.7;margin-bottom:1rem}
+            .quote{font-style:italic;font-size:.76rem;color:rgba(139,0,0,.5);display:block;margin-top:.5rem}
+            @keyframes fadeIn{0%{opacity:0;transform:translateY(20px)}100%{opacity:1;transform:translateY(0)}}
+            @keyframes pulseExile{0%,100%{box-shadow:0 0 0 0 rgba(139,0,0,.2)}50%{box-shadow:0 0 0 12px rgba(139,0,0,0)}}
+        </style>
+    </head>
+    <body>
+        <div class="exile-card">
+            <div class="exile-icon">
+                <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+            </div>
+            <h1>You Have Been Exiled</h1>
+            <p>Your presence has been revoked. The corridors are sealed, and the doors no longer open for you.</p>
+            <p>You have been exiled to the void.</p>
+            <span class="quote">"He who fights with monsters might take care lest he thereby become a monster." — Friedrich Nietzsche</span>
+        </div>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+
+// ────────────────────────────────────────────────────────────
 // AJAX API HANDLER — returns JSON, then exits
 // ────────────────────────────────────────────────────────────
 if (isset($_GET['ajax'])) {
@@ -73,6 +129,19 @@ if (isset($_GET['ajax'])) {
         $room_id  = (int)($_GET['room_id'] ?? 0);
         $after_id = (int)($_GET['after'] ?? 0);
 
+        // Check if room still exists (handles ephemeral deletions)
+        $s = $conn->prepare('SELECT 1 FROM Stranger_Room WHERE room_id = ?');
+        $s->bind_param('i', $room_id);
+        $s->execute();
+        $room_exists = ($s->get_result()->num_rows > 0);
+        $s->close();
+
+        if (!$room_exists) {
+            echo json_encode(['room_deleted' => true]);
+            $conn->close();
+            exit;
+        }
+
         $s = $conn->prepare(
             'SELECT m.message_id, m.content, m.sent_at, a.pseudonym, a.anon_id
              FROM Room_Message m
@@ -102,7 +171,7 @@ if (isset($_GET['ajax'])) {
                     (SELECT COUNT(*) FROM Room_Member rm WHERE rm.room_id = r.room_id) AS member_count
              FROM Stranger_Room r
              JOIN Anonymous_Profile a ON a.anon_id = r.created_by
-             WHERE r.is_active = 1
+             WHERE r.is_active = 1 AND r.is_random = 0
              ORDER BY r.created_at DESC'
         );
         $s->execute();
@@ -147,11 +216,11 @@ if (isset($_GET['ajax'])) {
 
     // ── Random Matchmaking (The Roulette) ────────────
     if ($action === 'random_match') {
-        // Try to find an active room with exactly 1 member (someone waiting)
+        // Try to find an active RANDOM room with exactly 1 member (someone waiting)
         $s = $conn->prepare(
             'SELECT r.room_id
              FROM Stranger_Room r
-             WHERE r.is_active = 1
+             WHERE r.is_active = 1 AND r.is_random = 1
                AND (SELECT COUNT(*) FROM Room_Member rm WHERE rm.room_id = r.room_id) = 1
                AND NOT EXISTS (SELECT 1 FROM Room_Member rm2 WHERE rm2.room_id = r.room_id AND rm2.anon_id = ?)
              ORDER BY RAND()
@@ -173,11 +242,11 @@ if (isset($_GET['ajax'])) {
 
             echo json_encode(['ok' => true, 'room_id' => $match_room_id, 'matched' => true]);
         } else {
-            // No match — create a new room called "The Void" and wait
+            // No match — create a new ephemeral room and wait
             $s->close();
             $void_name = 'The Void';
 
-            $s = $conn->prepare('INSERT INTO Stranger_Room (room_name, created_by) VALUES (?, ?)');
+            $s = $conn->prepare('INSERT INTO Stranger_Room (room_name, created_by, is_random) VALUES (?, ?, 1)');
             $s->bind_param('si', $void_name, $anon_id);
             $s->execute();
             $new_room_id = $conn->insert_id;
@@ -189,6 +258,110 @@ if (isset($_GET['ajax'])) {
             $s->close();
 
             echo json_encode(['ok' => true, 'room_id' => $new_room_id, 'matched' => false]);
+        }
+        $conn->close();
+        exit;
+    }
+
+    // ── Kick User (Owner Only) ────────────────────────
+    if ($action === 'kick_user' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input          = json_decode(file_get_contents('php://input'), true);
+        $room_id        = (int)($input['room_id'] ?? 0);
+        $target_anon_id = (int)($input['target_anon_id'] ?? 0);
+
+        if ($room_id > 0 && $target_anon_id > 0 && $target_anon_id !== $anon_id) {
+            // Verify ownership
+            $s = $conn->prepare('SELECT created_by FROM Stranger_Room WHERE room_id = ? AND is_active = 1');
+            $s->bind_param('i', $room_id);
+            $s->execute();
+            $res = $s->get_result();
+            if ($res->num_rows > 0 && (int)$res->fetch_assoc()['created_by'] === $anon_id) {
+                $s->close();
+                $s = $conn->prepare('DELETE FROM Room_Member WHERE room_id = ? AND anon_id = ?');
+                $s->bind_param('ii', $room_id, $target_anon_id);
+                $s->execute();
+                $s->close();
+                echo json_encode(['ok' => true]);
+            } else {
+                $s->close();
+                echo json_encode(['error' => 'Only the room creator may banish others.']);
+            }
+        } else {
+            echo json_encode(['error' => 'Invalid target.']);
+        }
+        $conn->close();
+        exit;
+    }
+
+    // ── Report User (3-Strike System) ────────────────
+    if ($action === 'report_user' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input            = json_decode(file_get_contents('php://input'), true);
+        $reported_anon_id = (int)($input['reported_anon_id'] ?? 0);
+        $room_id          = (int)($input['room_id'] ?? 0);
+
+        if ($reported_anon_id > 0 && $reported_anon_id !== $anon_id && $room_id > 0) {
+            // Resolve anon_id → profile_id
+            $s = $conn->prepare('SELECT profile_id FROM Anonymous_Profile WHERE anon_id = ?');
+            $s->bind_param('i', $reported_anon_id);
+            $s->execute();
+            $res = $s->get_result();
+            if ($res->num_rows === 0) {
+                $s->close();
+                echo json_encode(['error' => 'User not found.']);
+                $conn->close();
+                exit;
+            }
+            $reported_profile_id = (int)$res->fetch_assoc()['profile_id'];
+            $s->close();
+
+            // Resolve current user's profile_id for reporter
+            $s = $conn->prepare('SELECT profile_id FROM Anonymous_Profile WHERE anon_id = ?');
+            $s->bind_param('i', $anon_id);
+            $s->execute();
+            $reporter_profile_id = (int)$s->get_result()->fetch_assoc()['profile_id'];
+            $s->close();
+
+            // Insert report (UNIQUE constraint prevents duplicates)
+            $platform = 'Stranger';
+            $s = $conn->prepare(
+                'INSERT IGNORE INTO Report_Log (reported_user_id, reporter_user_id, room_or_group_id, platform) VALUES (?, ?, ?, ?)'
+            );
+            $s->bind_param('iiis', $reported_profile_id, $reporter_profile_id, $room_id, $platform);
+            $s->execute();
+            $inserted = $s->affected_rows > 0;
+            $s->close();
+
+            if (!$inserted) {
+                echo json_encode(['ok' => false, 'error' => 'You have already reported this stranger in this room.']);
+                $conn->close();
+                exit;
+            }
+
+            // Count total strikes against this user
+            $s = $conn->prepare('SELECT COUNT(*) AS cnt FROM Report_Log WHERE reported_user_id = ?');
+            $s->bind_param('i', $reported_profile_id);
+            $s->execute();
+            $strike_count = (int)$s->get_result()->fetch_assoc()['cnt'];
+            $s->close();
+
+            $banned = false;
+            if ($strike_count >= 3) {
+                // Ban the user across platforms
+                $s = $conn->prepare('UPDATE Student SET is_banned = 1 WHERE profile_id = ?');
+                $s->bind_param('i', $reported_profile_id);
+                $s->execute();
+                $s->close();
+
+                $s = $conn->prepare('UPDATE Anonymous_Profile SET is_banned = 1 WHERE profile_id = ?');
+                $s->bind_param('i', $reported_profile_id);
+                $s->execute();
+                $s->close();
+                $banned = true;
+            }
+
+            echo json_encode(['ok' => true, 'strike_count' => $strike_count, 'banned' => $banned]);
+        } else {
+            echo json_encode(['error' => 'Invalid report.']);
         }
         $conn->close();
         exit;
@@ -288,10 +461,27 @@ if ($anon_profile && $_SERVER['REQUEST_METHOD'] === 'POST') {
     if (isset($_POST['action']) && $_POST['action'] === 'leave_room') {
         $room_id = (int)($_POST['room_id'] ?? 0);
         if ($room_id > 0) {
-            $s = $conn->prepare('DELETE FROM Room_Member WHERE room_id = ? AND anon_id = ?');
-            $s->bind_param('ii', $room_id, $anon_id);
+            // Check if this is an ephemeral random room
+            $s = $conn->prepare('SELECT is_random FROM Stranger_Room WHERE room_id = ?');
+            $s->bind_param('i', $room_id);
             $s->execute();
+            $res = $s->get_result();
+            $is_random = ($res->num_rows > 0) ? (int)$res->fetch_assoc()['is_random'] : 0;
             $s->close();
+
+            if ($is_random) {
+                // Ephemeral: destroy the entire room (CASCADE wipes messages + members)
+                $s = $conn->prepare('DELETE FROM Stranger_Room WHERE room_id = ?');
+                $s->bind_param('i', $room_id);
+                $s->execute();
+                $s->close();
+            } else {
+                // Normal room: just remove this user's membership
+                $s = $conn->prepare('DELETE FROM Room_Member WHERE room_id = ? AND anon_id = ?');
+                $s->bind_param('ii', $room_id, $anon_id);
+                $s->execute();
+                $s->close();
+            }
 
             $conn->close();
             header('Location: stranger.php');
@@ -314,7 +504,7 @@ if ($anon_profile) {
     if (isset($_GET['room'])) {
         $room_id = (int)$_GET['room'];
         $s = $conn->prepare(
-            'SELECT r.room_id, r.room_name, r.created_at, r.created_by,
+            'SELECT r.room_id, r.room_name, r.created_at, r.created_by, r.is_random,
                     (SELECT COUNT(*) FROM Room_Member rm WHERE rm.room_id = r.room_id) AS member_count
              FROM Stranger_Room r
              JOIN Room_Member rm ON rm.room_id = r.room_id AND rm.anon_id = ?
@@ -895,6 +1085,37 @@ $conn->close();
             box-shadow: 0 0 20px rgba(139,0,0,.35);
             background: linear-gradient(135deg, #a01020, #6a0000);
         }
+
+        /* ── Message Action Buttons (Kick / Report) ───── */
+        .msg-actions {
+            display: flex; gap: .35rem; margin-top: .3rem;
+        }
+        .msg.mine .msg-actions { justify-content: flex-end; }
+        .btn-kick, .btn-report {
+            display: inline-flex; align-items: center; gap: .2rem;
+            padding: .15rem .45rem;
+            font-family: var(--font-body); font-size: .58rem; font-weight: 500;
+            letter-spacing: .04em; text-transform: uppercase;
+            border-radius: 2px; cursor: pointer;
+            transition: all .25s; opacity: 0;
+        }
+        .msg:hover .btn-kick, .msg:hover .btn-report { opacity: 1; }
+        .btn-kick svg, .btn-report svg { width: 10px; height: 10px; fill: currentColor; }
+
+        .btn-kick {
+            color: #e8e0d8; background: linear-gradient(135deg, var(--crimson), #5a0000);
+            border: 1px solid rgba(139,0,0,.5);
+        }
+        .btn-kick:hover { box-shadow: 0 0 12px rgba(139,0,0,.3); }
+
+        .btn-report {
+            color: var(--text-muted); background: rgba(255,255,255,.03);
+            border: 1px solid var(--border-dark);
+        }
+        .btn-report:hover {
+            color: var(--text-secondary); border-color: var(--border-crimson);
+            background: rgba(139,0,0,.06);
+        }
     </style>
 </head>
 <body>
@@ -1136,9 +1357,12 @@ elseif ($page_state === 'room' && $current_room): ?>
                 <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
                 <?= (int)$current_room['member_count'] ?>
             </span>
+            <?php if ((int)$current_room['is_random'] === 1): ?>
+                <span style="margin-left:.5rem; font-size:.65rem; color:var(--crimson-light); border:1px solid var(--border-crimson); padding:.2rem .5rem; border-radius:3px; background:var(--crimson-soft);">Ephemeral</span>
+            <?php endif; ?>
         </div>
         <div class="room-header-right">
-            <?php if ((int)$current_room['created_by'] === $anon_id): ?>
+            <?php if ((int)$current_room['is_random'] === 0 && (int)$current_room['created_by'] === $anon_id): ?>
             <button type="button" class="btn-close-room" id="btn-close-room"
                     title="Permanently close this room">
                 <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
@@ -1150,7 +1374,7 @@ elseif ($page_state === 'room' && $current_room): ?>
                 <input type="hidden" name="room_id" value="<?= (int)$current_room['room_id'] ?>">
                 <button type="submit" class="btn-ghost" style="color:#b44;">
                     <svg viewBox="0 0 24 24" style="fill:#b44;"><path d="M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
-                    Leave
+                    <?= (int)$current_room['is_random'] === 1 ? 'Disconnect' : 'Leave' ?>
                 </button>
             </form>
         </div>
@@ -1219,7 +1443,10 @@ elseif ($page_state === 'room' && $current_room): ?>
 
 <script>
 (function() {
-    const ROOM_ID  = <?= (int)$current_room['room_id'] ?>;
+    const ROOM_ID    = <?= (int)$current_room['room_id'] ?>;
+    const IS_OWNER   = <?= ((int)$current_room['is_random'] === 0 && (int)$current_room['created_by'] === $anon_id) ? 'true' : 'false' ?>;
+    const MY_ANON_ID = <?= $anon_id ?>;
+    const IS_RANDOM  = <?= (int)$current_room['is_random'] === 1 ? 'true' : 'false' ?>;
     const chatBox  = document.getElementById('chat-messages');
     const emptyMsg = document.getElementById('chat-empty');
     const msgInput = document.getElementById('msg-input');
@@ -1252,6 +1479,18 @@ elseif ($page_state === 'room' && $current_room): ?>
         fetch('stranger.php?ajax=fetch_messages&room_id=' + ROOM_ID + '&after=' + lastMsgId)
             .then(r => r.json())
             .then(data => {
+                if (data.banned) {
+                    clearInterval(msgPoll);
+                    window.location.reload();
+                    return;
+                }
+                if (data.room_deleted) {
+                    clearInterval(msgPoll);
+                    alert('The room has been closed or the other stranger left. Returning to the lobby.');
+                    window.location.href = 'stranger.php';
+                    return;
+                }
+
                 if (!data.messages || data.messages.length === 0) return;
 
                 // Hide empty state
@@ -1259,13 +1498,30 @@ elseif ($page_state === 'room' && $current_room): ?>
 
                 data.messages.forEach(m => {
                     const cls = m.is_mine ? 'mine' : 'theirs';
+                    const anonId = parseInt(m.anon_id);
                     const time = new Date(m.sent_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
                     const div = document.createElement('div');
                     div.className = 'msg ' + cls;
+
+                    let actionsHtml = '';
+                    if (!m.is_mine) {
+                        actionsHtml = '<div class="msg-actions">';
+                        if (IS_OWNER && !IS_RANDOM) {
+                            actionsHtml += '<button class="btn-kick" onclick="kickUser(' + anonId + ')" title="Kick from room">' +
+                                '<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>' +
+                                'Kick</button>';
+                        }
+                        actionsHtml += '<button class="btn-report" onclick="reportUser(' + anonId + ')" title="Report this stranger">' +
+                            '<svg viewBox="0 0 24 24"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>' +
+                            'Report</button>';
+                        actionsHtml += '</div>';
+                    }
+
                     div.innerHTML =
                         '<div class="msg-author">' + escHtml(m.pseudonym) + '</div>' +
                         '<div class="msg-bubble">' + escHtml(m.content) + '</div>' +
-                        '<div class="msg-time">' + time + '</div>';
+                        '<div class="msg-time">' + time + '</div>' +
+                        actionsHtml;
                     chatBox.appendChild(div);
                     lastMsgId = Math.max(lastMsgId, parseInt(m.message_id));
                 });
@@ -1287,31 +1543,47 @@ elseif ($page_state === 'room' && $current_room): ?>
 
     // Focus input on load
     msgInput.focus();
-
-    // ── Room Deletion Detection ──────────────────────
-    // If fetch_messages returns an empty response repeatedly for a deleted room,
-    // we detect it via a separate check.
-    let deletionCheckCount = 0;
-    setInterval(() => {
-        fetch('stranger.php?ajax=fetch_rooms')
-            .then(r => r.json())
-            .then(data => {
-                if (!data.rooms) return;
-                const stillExists = data.rooms.some(r => parseInt(r.room_id) === ROOM_ID);
-                if (!stillExists) {
-                    deletionCheckCount++;
-                    if (deletionCheckCount >= 2) {
-                        clearInterval(msgPoll);
-                        alert('This room has been closed by its creator. Returning to the lobby.');
-                        window.location.href = 'stranger.php';
-                    }
-                } else {
-                    deletionCheckCount = 0;
-                }
-            })
-            .catch(() => {});
-    }, 5000);
 })();
+
+// ── Kick User (Owner Only) ──────────────────────
+function kickUser(targetAnonId) {
+    if (!confirm('Banish this stranger from the room?')) return;
+    fetch('stranger.php?ajax=kick_user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room_id: <?= (int)$current_room['room_id'] ?>, target_anon_id: targetAnonId })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            alert('The stranger has been banished from this room.');
+        } else {
+            alert(data.error || 'Failed to kick user.');
+        }
+    })
+    .catch(() => alert('Network error.'));
+}
+
+// ── Report User (3-Strike System) ────────────────
+function reportUser(targetAnonId) {
+    if (!confirm('Report this stranger for misconduct?\n\nRepeated reports from the community may lead to their exile.')) return;
+    fetch('stranger.php?ajax=report_user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reported_anon_id: targetAnonId, room_id: <?= (int)$current_room['room_id'] ?> })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            let msg = 'Report filed. Strike ' + data.strike_count + ' of 3 recorded.';
+            if (data.banned) msg += '\n\nThe user has been exiled to the void.';
+            alert(msg);
+        } else {
+            alert(data.error || 'Failed to file report.');
+        }
+    })
+    .catch(() => alert('Network error.'));
+}
 
 // ── Close Room (Owner Only) ──────────────────────
 (function() {
