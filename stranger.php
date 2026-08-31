@@ -115,6 +115,85 @@ if (isset($_GET['ajax'])) {
         exit;
     }
 
+    // ── Delete Room (Owner Only) ─────────────────────
+    if ($action === 'delete_room' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input   = json_decode(file_get_contents('php://input'), true);
+        $room_id = (int)($input['room_id'] ?? 0);
+
+        if ($room_id > 0) {
+            // Verify ownership: created_by must match current anon_id
+            $s = $conn->prepare('SELECT created_by FROM Stranger_Room WHERE room_id = ? AND is_active = 1');
+            $s->bind_param('i', $room_id);
+            $s->execute();
+            $res = $s->get_result();
+            if ($res->num_rows > 0 && (int)$res->fetch_assoc()['created_by'] === $anon_id) {
+                $s->close();
+                // CASCADE deletes handle Room_Member and Room_Message automatically
+                $s = $conn->prepare('DELETE FROM Stranger_Room WHERE room_id = ?');
+                $s->bind_param('i', $room_id);
+                $s->execute();
+                $s->close();
+                echo json_encode(['ok' => true, 'deleted' => $room_id]);
+            } else {
+                $s->close();
+                echo json_encode(['error' => 'Permission denied. Only the room creator can close this room.']);
+            }
+        } else {
+            echo json_encode(['error' => 'Invalid room ID.']);
+        }
+        $conn->close();
+        exit;
+    }
+
+    // ── Random Matchmaking (The Roulette) ────────────
+    if ($action === 'random_match') {
+        // Try to find an active room with exactly 1 member (someone waiting)
+        $s = $conn->prepare(
+            'SELECT r.room_id
+             FROM Stranger_Room r
+             WHERE r.is_active = 1
+               AND (SELECT COUNT(*) FROM Room_Member rm WHERE rm.room_id = r.room_id) = 1
+               AND NOT EXISTS (SELECT 1 FROM Room_Member rm2 WHERE rm2.room_id = r.room_id AND rm2.anon_id = ?)
+             ORDER BY RAND()
+             LIMIT 1'
+        );
+        $s->bind_param('i', $anon_id);
+        $s->execute();
+        $res = $s->get_result();
+
+        if ($res->num_rows > 0) {
+            // Match found — join the existing room
+            $match_room_id = (int)$res->fetch_assoc()['room_id'];
+            $s->close();
+
+            $s = $conn->prepare('INSERT IGNORE INTO Room_Member (room_id, anon_id) VALUES (?, ?)');
+            $s->bind_param('ii', $match_room_id, $anon_id);
+            $s->execute();
+            $s->close();
+
+            echo json_encode(['ok' => true, 'room_id' => $match_room_id, 'matched' => true]);
+        } else {
+            // No match — create a new room called "The Void" and wait
+            $s->close();
+            $void_name = 'The Void';
+
+            $s = $conn->prepare('INSERT INTO Stranger_Room (room_name, created_by) VALUES (?, ?)');
+            $s->bind_param('si', $void_name, $anon_id);
+            $s->execute();
+            $new_room_id = $conn->insert_id;
+            $s->close();
+
+            $s = $conn->prepare('INSERT INTO Room_Member (room_id, anon_id) VALUES (?, ?)');
+            $s->bind_param('ii', $new_room_id, $anon_id);
+            $s->execute();
+            $s->close();
+
+            echo json_encode(['ok' => true, 'room_id' => $new_room_id, 'matched' => false]);
+        }
+        $conn->close();
+        exit;
+    }
+
     echo json_encode(['error' => 'Unknown action']);
     $conn->close();
     exit;
@@ -235,7 +314,7 @@ if ($anon_profile) {
     if (isset($_GET['room'])) {
         $room_id = (int)$_GET['room'];
         $s = $conn->prepare(
-            'SELECT r.room_id, r.room_name, r.created_at,
+            'SELECT r.room_id, r.room_name, r.created_at, r.created_by,
                     (SELECT COUNT(*) FROM Room_Member rm WHERE rm.room_id = r.room_id) AS member_count
              FROM Stranger_Room r
              JOIN Room_Member rm ON rm.room_id = r.room_id AND rm.anon_id = ?
@@ -727,6 +806,95 @@ $conn->close();
         @media (max-width: 480px) {
             .onboard-card { padding: 2rem 1.25rem; }
         }
+
+        /* ── Roulette Button ──────────────────────────── */
+        .roulette-section {
+            margin-bottom: 2rem; padding-bottom: 2rem;
+            border-bottom: 1px solid var(--border-dark);
+        }
+        .roulette-section h3 {
+            font-family: var(--font-gothic); font-size: 1rem; font-weight: 600;
+            letter-spacing: .06em; margin-bottom: .5rem;
+        }
+        .roulette-section .roulette-sub {
+            font-size: .78rem; color: var(--text-muted); font-weight: 300;
+            line-height: 1.6; margin-bottom: 1.25rem;
+        }
+        .roulette-section .roulette-sub em {
+            color: var(--border-crimson); font-style: italic; font-size: .74rem;
+        }
+
+        .btn-roulette {
+            display: flex; align-items: center; justify-content: center; gap: .6rem;
+            width: 100%; padding: 1rem 1.5rem;
+            font-family: var(--font-gothic); font-size: .88rem; font-weight: 600;
+            letter-spacing: .1em; text-transform: uppercase;
+            color: var(--text-primary);
+            background: linear-gradient(135deg, #4a0000 0%, var(--crimson) 50%, #4a0000 100%);
+            background-size: 200% 100%;
+            border: 1px solid rgba(139,0,0,.6); border-radius: 4px;
+            cursor: pointer; position: relative; overflow: hidden;
+            transition: box-shadow .4s, transform .3s;
+            animation: rouletteShimmer 4s ease-in-out infinite;
+        }
+        .btn-roulette svg { width: 20px; height: 20px; fill: currentColor; }
+
+        @keyframes rouletteShimmer {
+            0%, 100% { background-position: 0% 50%; }
+            50%      { background-position: 100% 50%; }
+        }
+
+        .btn-roulette:hover {
+            box-shadow: 0 0 40px rgba(139,0,0,.4), 0 0 80px rgba(139,0,0,.15);
+            transform: translateY(-2px);
+        }
+        .btn-roulette:active { transform: translateY(0); }
+
+        .btn-roulette::after {
+            content: '';
+            position: absolute; top: -50%; left: -50%;
+            width: 200%; height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,.04) 0%, transparent 60%);
+            animation: roulettePulse 3s ease-in-out infinite;
+            pointer-events: none;
+        }
+        @keyframes roulettePulse {
+            0%, 100% { transform: scale(.8); opacity: 0; }
+            50%      { transform: scale(1.1); opacity: 1; }
+        }
+
+        /* Roulette loading overlay */
+        .roulette-loading {
+            display: none; align-items: center; justify-content: center; gap: .75rem;
+            margin-top: 1rem; padding: 1rem;
+            font-size: .8rem; color: var(--text-muted); font-style: italic;
+        }
+        .roulette-loading.active { display: flex; }
+        .roulette-spinner {
+            width: 20px; height: 20px;
+            border: 2px solid var(--border-dark);
+            border-top-color: var(--crimson);
+            border-radius: 50%;
+            animation: spin .8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Close Room Button ────────────────────────── */
+        .btn-close-room {
+            display: inline-flex; align-items: center; gap: .35rem;
+            padding: .4rem .8rem;
+            font-family: var(--font-gothic); font-size: .65rem; font-weight: 600;
+            letter-spacing: .08em; text-transform: uppercase;
+            color: #e8e0d8;
+            background: linear-gradient(135deg, var(--crimson), #5a0000);
+            border: 1px solid rgba(139,0,0,.6); border-radius: 3px;
+            cursor: pointer; transition: all .3s;
+        }
+        .btn-close-room svg { width: 13px; height: 13px; fill: currentColor; }
+        .btn-close-room:hover {
+            box-shadow: 0 0 20px rgba(139,0,0,.35);
+            background: linear-gradient(135deg, #a01020, #6a0000);
+        }
     </style>
 </head>
 <body>
@@ -811,6 +979,24 @@ elseif ($page_state === 'lobby'): ?>
     </nav>
 
     <div class="lobby-content">
+
+        <!-- ── The Roulette: Random Matchmaking ───────── -->
+        <div class="roulette-section">
+            <h3>The Roulette</h3>
+            <p class="roulette-sub">
+                Surrender to chance. One click, and fate pairs you with another soul wandering these corridors.<br>
+                <em>"Should I kill myself, or have a cup of coffee?" — Albert Camus</em>
+            </p>
+            <button type="button" class="btn-roulette" id="btn-roulette" onclick="startRoulette()">
+                <svg viewBox="0 0 24 24"><path d="M19.07 4.93l-1.41 1.41A8.014 8.014 0 0 1 20 12c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8c1.85 0 3.55.63 4.9 1.69L14 8.54V3h5.54l-2.09 2.09 1.62-.16zM12 20c4.42 0 8-3.58 8-8s-3.58-8-8-8-8 3.58-8 8 3.58 8 8 8z"/></svg>
+                Connect with a Random Stranger
+            </button>
+            <div class="roulette-loading" id="roulette-loading">
+                <div class="roulette-spinner"></div>
+                <span>Reaching into the void…</span>
+            </div>
+        </div>
+
         <!-- Create Room -->
         <div class="create-section">
             <h3>Summon a Room</h3>
@@ -894,6 +1080,40 @@ elseif ($page_state === 'lobby'): ?>
     fetchRooms();
     setInterval(fetchRooms, 8000);
 })();
+
+// ── Roulette Matchmaking ─────────────────────────
+function startRoulette() {
+    const btn     = document.getElementById('btn-roulette');
+    const loader  = document.getElementById('roulette-loading');
+    btn.disabled  = true;
+    btn.style.opacity = '.5';
+    btn.style.pointerEvents = 'none';
+    loader.classList.add('active');
+
+    fetch('stranger.php?ajax=random_match')
+        .then(r => r.json())
+        .then(data => {
+            if (data.ok && data.room_id) {
+                loader.querySelector('span').textContent = data.matched
+                    ? 'A stranger awaits… entering now.'
+                    : 'No one is here yet. You are the first. Waiting in The Void…';
+                setTimeout(() => {
+                    window.location.href = 'stranger.php?room=' + data.room_id;
+                }, 900);
+            } else {
+                loader.querySelector('span').textContent = data.error || 'The void rejected you. Try again.';
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.style.pointerEvents = 'auto';
+            }
+        })
+        .catch(() => {
+            loader.querySelector('span').textContent = 'Connection lost in the corridors.';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.pointerEvents = 'auto';
+        });
+}
 </script>
 
 
@@ -918,6 +1138,13 @@ elseif ($page_state === 'room' && $current_room): ?>
             </span>
         </div>
         <div class="room-header-right">
+            <?php if ((int)$current_room['created_by'] === $anon_id): ?>
+            <button type="button" class="btn-close-room" id="btn-close-room"
+                    title="Permanently close this room">
+                <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                Close Room
+            </button>
+            <?php endif; ?>
             <form method="POST" action="stranger.php" style="margin:0;">
                 <input type="hidden" name="action" value="leave_room">
                 <input type="hidden" name="room_id" value="<?= (int)$current_room['room_id'] ?>">
@@ -1056,10 +1283,73 @@ elseif ($page_state === 'room' && $current_room): ?>
 
     // Initial load + polling
     fetchMessages();
-    setInterval(fetchMessages, 3000);
+    const msgPoll = setInterval(fetchMessages, 3000);
 
     // Focus input on load
     msgInput.focus();
+
+    // ── Room Deletion Detection ──────────────────────
+    // If fetch_messages returns an empty response repeatedly for a deleted room,
+    // we detect it via a separate check.
+    let deletionCheckCount = 0;
+    setInterval(() => {
+        fetch('stranger.php?ajax=fetch_rooms')
+            .then(r => r.json())
+            .then(data => {
+                if (!data.rooms) return;
+                const stillExists = data.rooms.some(r => parseInt(r.room_id) === ROOM_ID);
+                if (!stillExists) {
+                    deletionCheckCount++;
+                    if (deletionCheckCount >= 2) {
+                        clearInterval(msgPoll);
+                        alert('This room has been closed by its creator. Returning to the lobby.');
+                        window.location.href = 'stranger.php';
+                    }
+                } else {
+                    deletionCheckCount = 0;
+                }
+            })
+            .catch(() => {});
+    }, 5000);
+})();
+
+// ── Close Room (Owner Only) ──────────────────────
+(function() {
+    const closeBtn = document.getElementById('btn-close-room');
+    if (!closeBtn) return; // Not the owner
+
+    closeBtn.addEventListener('click', function() {
+        const confirmed = confirm(
+            'Are you sure you want to permanently close this room?\n\n' +
+            'All messages will be erased, and all members will be returned to the lobby.\n' +
+            'This action cannot be undone.'
+        );
+        if (!confirmed) return;
+
+        closeBtn.disabled = true;
+        closeBtn.textContent = 'Closing…';
+
+        fetch('stranger.php?ajax=delete_room', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ room_id: <?= (int)$current_room['room_id'] ?> })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.ok) {
+                window.location.href = 'stranger.php';
+            } else {
+                alert(data.error || 'Failed to close the room.');
+                closeBtn.disabled = false;
+                closeBtn.textContent = 'Close Room';
+            }
+        })
+        .catch(() => {
+            alert('Network error. Please try again.');
+            closeBtn.disabled = false;
+            closeBtn.textContent = 'Close Room';
+        });
+    });
 })();
 
 // ── Toggle media buttons (UI only) ───────────────
